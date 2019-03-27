@@ -32,36 +32,18 @@ var completeNetconf chan int = make(chan int)
 
 func socketConfInit(config *ConfigData) {
 
-	for i := 1; i < 3; i++ {
+	for i := 1; i < 4; i++ {
 		if i%8 == 0 && i >= 8 {
 			time.Sleep(10 * time.Second)
 		}
 		devSn := strconv.Itoa(i)
-		onosaddr, err := net.ResolveTCPAddr("tcp4", config.onosAddr)
-		checkError(err)
-		onosSocket, err1 := net.DialTCP("tcp", nil, onosaddr) //作为客户端连接onos，需要指定协议
-		checkError(err1)
-
-		netconfaddr, err2 := net.ResolveTCPAddr("tcp4", config.netconfAddr)
-		checkError(err2)
-		netconfSocket, err3 := net.DialTCP("tcp", nil, netconfaddr) //作为客户端连接netconf，需要指定协议
-		checkError(err3)
-
-		//fmt.Println("onosSocket: %s", onosSocket.LocalAddr())
-		//fmt.Println("netconfSocket: %s", netconfSocket.LocalAddr())
-		socketServer = NewSocketServer(onosSocket, netconfSocket, devSn)
-		onosSocket.Write([]byte("ENG:" + devSn + "\r\n"))
-		fmt.Print(devSn)
-		go socketServer.dealMessage(socketServer.sn, onosSocket, completeOnos)
-		go socketServer.dealMessage(socketServer.sn, netconfSocket, completeNetconf)
-		//fmt.Println("ENG:" + devSn)
+		messageExchange(devSn, config)
 	}
 	<-completeOnos
 	<-completeNetconf
-
 }
 
-func (sok *SocketServer) dealMessage(sn string, socket *net.TCPConn, con chan (int)) {
+func (sok *SocketServer) dealMessage(sn string, socket *net.TCPConn, con chan (int), config *ConfigData) {
 	var remoteSocket *net.TCPConn
 	//var dataSource string
 	if s, ok := sok.onosSocketMap[sn]; ok {
@@ -73,12 +55,31 @@ func (sok *SocketServer) dealMessage(sn string, socket *net.TCPConn, con chan (i
 			//dataSource = " netconf:"
 		}
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("Error: %s", r)
+			if s, ok := sok.onosSocketMap[sn]; ok {
+				delete(sok.onosSocketMap, sn)
+				delete(sok.netconfSocketMap, sn)
+				if socket == s || remoteSocket == s {
+					socket.Close()
+					remoteSocket.Close()
+					time.Sleep(10 * time.Second)
+					messageExchange(sn, config)
+				}
+			}
+		}
+	}()
+
 	buf := make([]byte, 1024) //定义一个切片的长度是1024
 	for true {
 		data, err := socket.Read(buf)
-		checkError(err)
-		//fmt.Println("receive data from"+dataSource, string(buf[:data]))
+		if err != nil {
+			panic("a bug occur")
+		}
 		remoteSocket.Write(buf[:data])
+		//fmt.Println("receive data from"+dataSource, string(buf[:data]))
+
 	}
 	con <- 0
 }
@@ -98,4 +99,20 @@ func checkError(err error) {
 		fmt.Println("Error: %s", err.Error())
 		os.Exit(1)
 	}
+}
+func messageExchange(sn string, config *ConfigData) {
+	onosaddr, err := net.ResolveTCPAddr("tcp4", config.onosAddr)
+	checkError(err)
+	onosSocket, err1 := net.DialTCP("tcp", nil, onosaddr) //作为客户端连接onos，需要指定协议
+	checkError(err1)
+
+	netconfaddr, err2 := net.ResolveTCPAddr("tcp4", config.netconfAddr)
+	checkError(err2)
+	netconfSocket, err3 := net.DialTCP("tcp", nil, netconfaddr) //作为客户端连接netconf，需要指定协议
+	checkError(err3)
+	socketServer = NewSocketServer(onosSocket, netconfSocket, sn)
+	onosSocket.Write([]byte("ENG:" + sn + "\r\n"))
+	fmt.Print(sn)
+	go socketServer.dealMessage(socketServer.sn, onosSocket, completeOnos, config)
+	go socketServer.dealMessage(socketServer.sn, netconfSocket, completeNetconf, config)
 }
